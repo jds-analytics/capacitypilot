@@ -55,9 +55,15 @@ Plain-English terms:
 5. **Database roles**:
    - `cp_owner`: owns tables, runs migrations only. Never used by the API or workers.
    - `cp_app`: used by API and workers. `NOBYPASSRLS`, no `CREATE`, no access to individual telemetry
-     partitions (only the parent table, where policies apply).
+     partitions (only the parent table, where policies apply). May call
+     `cp_create_telemetry_partitions(days_ahead)` but **not** the drop function below.
    - `cp_scheduler`: may read the `tenants` table only, to loop over tenants for nightly jobs; it then
-     opens a normal `cp_app` transaction per tenant.
+     opens a normal `cp_app` transaction per tenant. It is also the **only** role allowed to call
+     `cp_drop_telemetry_partitions_before(cutoff)`, which refuses any cutoff newer than today minus
+     **14 days** (approved raw retention).
+   - Both partition functions are `SECURITY DEFINER` (run with `cp_owner`'s rights), use a fixed
+     `search_path = pg_catalog, public, pg_temp`, and name every table with its schema
+     (`test_retention_function_refuses_cutoff_inside_14_days`).
 6. **Not-found, not forbidden**: asking for another tenant's object by id returns **HTTP 404**, so ids
    cannot be probed.
 7. **Queue messages** carry `tenant_id`; workers set it per message before touching the database.

@@ -177,10 +177,15 @@ twice. Errors use one standard format. Endpoints marked **P2** arrive in Phase 2
   (`(tenant_id, user_id, key)`; telemetry uses `(tenant_id, key)` because the sender is a machine
   credential, see CP-19). Same key + same body within 24 h returns the original response; same key +
   different body -> **422**; same key still in progress -> **409**.
+  **Crash safety**: if the server crashes mid-request, its key would otherwise stay "in progress"
+  forever. So an in-progress key older than the endpoint's hard timeout plus a **60 s** margin is
+  treated as failed and the request may be retried (for the assistant: 15 s + 60 s = **75 s**).
   **Streaming assistant (`POST /v1/planner/questions`)**: a repeat while the first answer is still
-  streaming -> **409** + `Retry-After: 2`; a repeat after it finished returns the stored answer as a
-  plain JSON body (the same shape as `GET /v1/planner/questions/{id}`, status **200**, header
-  `Idempotent-Replay: true`), with no new model calls and no new cost.
+  streaming (and younger than 75 s) -> **409** + `Retry-After: 2`; a repeat after it finished returns
+  the stored answer as a plain JSON body (the same shape as `GET /v1/planner/questions/{id}`, status
+  **200**, header `Idempotent-Replay: true`), with no new model calls and no new cost. Exception: if
+  the first attempt ended `timed_out` or `error`, or its key expired as above, the repeat is **run
+  again** as a fresh answer (new model calls, new cost, counted against the usual limits and caps).
 - **Pagination**: `limit` (1-100, default 50), `cursor`, `sort` from a per-endpoint allow-list.
   Response `{items, next_cursor}`.
 - **Errors**: RFC 9457 `application/problem+json` with `type`, `title`, `status`, `detail`,
@@ -450,6 +455,7 @@ from Phase 2 tickets (marked P2) add coverage later. QA writes a target-vs-actua
 | Retries | `test_idempotency_key_scoped_per_tenant_and_user` | Same key from two tenants or two users never collides | CP-17 |
 | Retries | `test_telemetry_idempotency_key_scoped_per_tenant` | Same telemetry key from two tenants: both batches stored, no shared reply | CP-19 |
 | Retries | `test_planner_idempotent_replay_returns_stored_answer` | Repeat while streaming -> 409; repeat after `done` -> stored answer, no new model calls | CP-47 |
+| Retries | `test_in_progress_idempotency_key_expires_after_timeout_and_can_retry` | A key left "in progress" by a crash is treated as failed after 75 s (15 s timeout + 60 s) and the retry runs; a retry after a `timed_out` or `error` attempt also runs again | CP-47 |
 | Partial failure | `test_poison_message_moves_to_dead_letter_after_5_deliveries` | Bad item goes to DLQ with error and trace id; others continue | CP-08, CP-20 |
 | Partial failure | `test_outbox_event_published_only_after_commit` | Rolled-back change publishes nothing; committed change publishes once | CP-16 |
 | Partial failure | `test_outbox_relay_crash_does_not_lose_or_duplicate_effects` | Kill relay mid-batch; every event's effect happens exactly once | CP-16 |
@@ -468,6 +474,7 @@ from Phase 2 tickets (marked P2) add coverage later. QA writes a target-vs-actua
 | Tenancy | `test_app_role_cannot_bypass_rls` | `cp_app` cannot see other tenants, even reading partitions | CP-05, CP-13 |
 | Tenancy | `test_child_cannot_reference_other_tenant_parent` | Composite foreign keys hold | CP-05 |
 | Tenancy | `test_app_role_cannot_create_or_drop_partitions_directly` | `cp_app` has no DDL rights; partitions change only through the `cp_owner` SECURITY DEFINER functions | CP-13 |
+| Tenancy | `test_retention_function_refuses_cutoff_inside_14_days` | The drop function refuses any cutoff newer than today minus 14 days; `cp_app` cannot call it, `cp_scheduler` can | CP-13, CP-42 (P2) |
 | Tenancy | `test_cross_tenant_access_returns_404_for_every_endpoint` | Each endpoint tried with another tenant's id | Per-endpoint tests in every MVP endpoint ticket; full sweep CP-34 (P2) |
 | Tenancy | `test_agent_tools_cannot_read_other_tenant` | Tools under tenant A never return tenant B data | CP-36 |
 | Observability | `test_logs_are_json_with_trace_id` | Every log line is JSON with `trace_id` | CP-06 |
@@ -855,7 +862,7 @@ Each ticket shows whether it is **MVP (wave Mn)** or **Phase 2 (wave Pn)**.
 - Files: as in overlap check
 - Acceptance:
   1. Creates `telemetry_points` (partitioned by day), `telemetry_hourly`, `telemetry_daily`, `forecast_runs`, `forecasts`, `forecast_points`, `policy_documents`, `document_chunks` (`vector(1024)` for Voyage AI, HNSW cosine, GIN on tsv), `planner_questions` (with `route` and `models_used`), all tenant-owned with forced RLS.
-  2. Creates partitions from 7 days back to **30 days** ahead (so the MVP runs without CP-42) and two SQL functions: `cp_create_telemetry_partitions(days_ahead int)` (used by CP-20) and `cp_drop_telemetry_partitions_before(cutoff date)` (used by CP-42's retention job; refuses a cutoff of today or later). Both are `SECURITY DEFINER` (they run with their owner's rights), owned by `cp_owner`, with a fixed `search_path = pg_catalog, public`; `cp_app` is granted `EXECUTE` on them and nothing else. `cp_app` is **never** granted `CREATE`, DDL rights or privileges on individual partitions. A test (`test_app_role_cannot_create_or_drop_partitions_directly`) proves `cp_app` cannot run `CREATE TABLE ... PARTITION OF` or `DROP TABLE` itself but can call the function.
+  2. Creates partitions from 7 days back to **30 days** ahead (so the MVP runs without CP-42) and two SQL functions: `cp_create_telemetry_partitions(days_ahead int)` (used by CP-20) and `cp_drop_telemetry_partitions_before(cutoff date)` (used by CP-42's retention job; refuses any cutoff newer than today minus **14 days**, the approved raw retention, Q6). Both are `SECURITY DEFINER` (they run with their owner's rights), owned by `cp_owner`, with a fixed `search_path = pg_catalog, public, pg_temp`, and every table they touch is written with its schema (e.g. `public.telemetry_points`) so nothing can be swapped in by name. `EXECUTE` on the create function is granted to `cp_app`; `EXECUTE` on the drop function is granted **only** to `cp_scheduler`, never to `cp_app` (and revoked from `PUBLIC`). `cp_app` is **never** granted `CREATE`, DDL rights or privileges on individual partitions. A test (`test_app_role_cannot_create_or_drop_partitions_directly`) proves `cp_app` cannot run `CREATE TABLE ... PARTITION OF` or `DROP TABLE` itself but can call the create function; `test_retention_function_refuses_cutoff_inside_14_days` proves the drop function refuses a cutoff inside 14 days and that `cp_app` cannot call it while `cp_scheduler` can.
   3. `messages.py` defines the versioned telemetry stream message (`v`, `tenant_id`, `rack_id`, `room_id`, `site_id`, `metric`, `ts`, `value`, `batch_id`, `traceparent`) with Pydantic validation.
   4. Existing tenancy and migration named tests now cover the new tables and pass; upgrade/downgrade round trip passes on seeded data.
   5. PR shows `EXPLAIN` proving index use for `(tenant_id, rack_id, metric, ts)` and `(tenant_id, room_id, metric, day)` lookups.
@@ -894,7 +901,7 @@ Each ticket shows whether it is **MVP (wave Mn)** or **Phase 2 (wave Pn)**.
 - Files: as in overlap check
 - Acceptance:
   1. A reusable dependency stores `(tenant_id, user_id, key)` with request hash and response for **24 h**; `POST` without the header -> 422.
-  2. `test_idempotency_key_replay_returns_original_response` and `test_idempotency_key_reuse_with_different_body_returns_422` pass; concurrent duplicate in flight -> 409.
+  2. `test_idempotency_key_replay_returns_original_response` and `test_idempotency_key_reuse_with_different_body_returns_422` pass; concurrent duplicate in flight -> 409. An in-progress key older than the endpoint's hard timeout plus **60 s** (a crashed first attempt) is treated as failed and the retry runs (section 3; proven for the assistant by `test_in_progress_idempotency_key_expires_after_timeout_and_can_retry` in CP-47).
   3. The same key used by two different tenants, or by two users in the same tenant, does not collide (`test_idempotency_key_scoped_per_tenant_and_user`).
   4. Expired keys are purged by a batched delete function (5,000 rows per batch).
 
@@ -1130,9 +1137,9 @@ Each ticket shows whether it is **MVP (wave Mn)** or **Phase 2 (wave Pn)**.
 - Phase 2 (P1) | Owner: data-engineer | Risk: risk:high (deleting data) | Size: ~450 lines | Depends on: CP-16, CP-20
 - Files: as in overlap check
 - Acceptance:
-  1. Daily job creates telemetry partitions **14 days** ahead; retention job drops raw partitions older than **14 days** (approved Q6) and deletes hourly rollups older than **400 days** and daily rollups older than **5 years**, in batches of 5,000. Partition create and drop go only through `SECURITY DEFINER` functions owned by `cp_owner` with a fixed `search_path` (`cp_create_telemetry_partitions` and `cp_drop_telemetry_partitions_before`, both created in CP-13's migration 0002, so this ticket adds no migration). `cp_app` may only `EXECUTE` them and is not granted DDL rights.
+  1. Daily job creates telemetry partitions **14 days** ahead; retention job drops raw partitions older than **14 days** (approved Q6) and deletes hourly rollups older than **400 days** and daily rollups older than **5 years**, in batches of 5,000. Partition create and drop go only through `SECURITY DEFINER` functions owned by `cp_owner` with a fixed `search_path` (`cp_create_telemetry_partitions` and `cp_drop_telemetry_partitions_before`, both created in CP-13's migration 0002, so this ticket adds no migration). The daily create step may run as `cp_app` (`EXECUTE` on the create function only); the retention drop step runs as `cp_scheduler`, the only role allowed to `EXECUTE` the drop function. Neither role is granted DDL rights.
   2. `backfill_rollups` recomputes rollups for a date range in keyset batches of **5,000** rows, checkpointing in `job_checkpoints`; `test_backfill_is_batched_and_resumable` passes.
-  3. Retention never drops a partition for today or the future (tested); dry-run mode lists what would be dropped.
+  3. Retention never drops a partition newer than today minus 14 days (`test_retention_function_refuses_cutoff_inside_14_days`, which also proves `cp_app` cannot call the drop function and `cp_scheduler` can); dry-run mode lists what would be dropped.
   4. Each job logs rows affected and duration; PR shows `EXPLAIN` for the batch query.
 
 #### CP-43: Planner agent loop: Haiku router, Haiku and Sonnet answer paths, caps, cost guard, streaming
@@ -1184,7 +1191,7 @@ Each ticket shows whether it is **MVP (wave Mn)** or **Phase 2 (wave Pn)**.
   4. Each question stored in `planner_questions` with route, models used, status, citations, tool calls, tokens, cost in dollars and latency; list and detail endpoints paginated and tenant-scoped.
   5. End-to-end p95 time to first token <= **1.5 s** and total <= **6 s** measured through the API on the smoke eval subset.
   6. Authorization tests per route including cross-tenant -> 404 and `ingestor` -> 403.
-  7. Repeated `Idempotency-Key` behaves as in section 3: while the first answer is still streaming -> **409** + `Retry-After: 2`; after it finished -> **200** with the stored answer as JSON and `Idempotent-Replay: true`, with no new model calls and no added cost; `test_planner_idempotent_replay_returns_stored_answer` passes.
+  7. Repeated `Idempotency-Key` behaves as in section 3: while the first answer is still streaming -> **409** + `Retry-After: 2`; after it finished -> **200** with the stored answer as JSON and `Idempotent-Replay: true`, with no new model calls and no added cost; after a `timed_out` or `error` attempt, or once an in-progress key is older than **75 s** (15 s hard timeout + 60 s margin, e.g. after a crash), the repeat runs again as a fresh answer. `test_planner_idempotent_replay_returns_stored_answer` and `test_in_progress_idempotency_key_expires_after_timeout_and_can_retry` pass.
 
 #### CP-48: Nightly evaluation workflow
 - Phase 2 (P2) | Owner: release | Risk: risk:high (CI/CD) | Size: ~120 lines | Depends on: CP-37, CP-41, CP-43
@@ -1204,7 +1211,7 @@ Each ticket shows whether it is **MVP (wave Mn)** or **Phase 2 (wave Pn)**.
   4. Rollback to the previous image documented and tested once; availability SLO for staging set and measured.
 
 #### CP-50: Web planner chat screen
-- Phase 2 (P3) | Owner: builder | Risk: risk:medium | Size: ~500 lines | Depends on: CP-11, CP-21, CP-22, CP-35, CP-47, CP-53
+- Phase 2 (P3) | Owner: builder | Risk: risk:medium | Size: ~500 lines | Depends on: CP-11, CP-21, CP-22, CP-26, CP-35, CP-47, CP-53
 - Files: as in overlap check
 - Acceptance:
   1. Chat input (<= 2,000 characters) streams the answer token by token, shows tool steps ("Checking DAL-1 forecast...") and clickable citations.
