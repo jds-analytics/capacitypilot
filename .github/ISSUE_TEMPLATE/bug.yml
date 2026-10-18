@@ -1,0 +1,42 @@
+name: Bug report
+description: Something is broken or behaves wrongly
+title: "[Bug]: "
+labels: ["bug"]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: "1. Go to...\n2. Click...\n3. See error"
+    validations:
+      required: true
+  - type: dropdown
+    id: severity
+    attributes:
+      label: Severity
+      options:
+        - "S1 - data loss, security, or down"
+        - "S2 - feature broken"
+        - "S3 - minor or cosmetic"
+    validations:
+      required: true
+  - type: input
+    id: found_in
+    attributes:
+      label: Found in (PR number, staging, nightly QA, local)
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Evidence (error text, screenshot, trace ID)

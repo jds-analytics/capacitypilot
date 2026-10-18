@@ -54,3 +54,16 @@ Each standard needs a named test that proves it.
 
 ## Lessons learned
 See docs/lessons.md. Read it before starting any ticket.
+## Bugs and issues
+- Any bug you find outside your ticket: open a GitHub issue immediately with
+  `gh issue create --label bug --label found-by-agent --label s1|s2|s3`,
+  filled in like .github/ISSUE_TEMPLATE/bug.yml (what happened, expected, steps,
+  severity, found in). Link the issue number in your PR under "Found, not fixed". Do not fix it.
+- S1 = data loss, security hole, or system down. Say "S1 FOUND" at the top of your
+  reply to the director and stop work.
+- Every PR that fixes an issue says "Fixes #<number>" in its description, so merging closes it.
+- Every bug fix includes a regression test that fails without the fix and passes with it.
+  Show both runs in the PR.
+- Label every PR risk:low, risk:medium or risk:high:
+  low = docs, UI text, tests only; medium = features and endpoints;
+  high = auth, tenancy, migrations, queues, AI agent loop, CI/CD, infra, dependencies.
