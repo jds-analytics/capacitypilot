@@ -63,7 +63,9 @@ Plain-English terms:
      **14 days** (approved raw retention).
    - Both partition functions are `SECURITY DEFINER` (run with `cp_owner`'s rights), use a fixed
      `search_path = pg_catalog, public, pg_temp`, and name every table with its schema
-     (`test_retention_function_refuses_cutoff_inside_14_days`).
+     (`test_retention_function_refuses_cutoff_inside_14_days`). `EXECUTE` on **both** functions is
+     revoked from `PUBLIC` (PostgreSQL otherwise lets every role call a new function), then granted
+     only to the roles named above (`test_app_role_cannot_create_or_drop_partitions_directly`).
 6. **Not-found, not forbidden**: asking for another tenant's object by id returns **HTTP 404**, so ids
    cannot be probed.
 7. **Queue messages** carry `tenant_id`; workers set it per message before touching the database.

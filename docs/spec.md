@@ -193,7 +193,8 @@ twice. Errors use one standard format. Endpoints marked **P2** arrive in Phase 2
 - **Errors**: RFC 9457 `application/problem+json` with `type`, `title`, `status`, `detail`,
   `trace_id`. No stack traces. Types: `validation`, `unauthorized`, `forbidden`, `not-found`,
   `conflict`, `capacity-exceeded`, `invalid-transition`, `invalid-cursor`, `idempotency-mismatch`,
-  `queue-full`, `rate-limited`, `unavailable`, `payload-too-large`.
+  `queue-full`, `rate-limited`, `unavailable`, `payload-too-large`, `timeout` (**504**, request cut
+  off at its hard timeout, CP-06).
 - **Busy signals**: **429** + `Retry-After` (seconds) when a queue is full or a rate limit is hit;
   **503** + `Retry-After` when a dependency (Redis) is down.
 - **Tracing**: accepts and returns W3C `traceparent`; every response has `X-Trace-Id`.
@@ -457,6 +458,9 @@ from Phase 2 tickets (marked P2) add coverage later. QA writes a target-vs-actua
 | Retries | `test_idempotency_key_scoped_per_tenant_and_user` | Same key from two tenants or two users never collides | CP-17 |
 | Retries | `test_telemetry_idempotency_key_scoped_per_tenant` | Same telemetry key from two tenants: both batches stored, no shared reply | CP-19 |
 | Retries | `test_planner_idempotent_replay_returns_stored_answer` | Repeat while streaming -> 409; repeat after `done` -> stored answer, no new model calls | CP-47 |
+| Retries | `test_request_cut_off_at_default_hard_timeout_10s` | A slow endpoint with no stated timeout is stopped at 10 s (504 within 10.5 s) and its later code never runs | CP-06 |
+| Retries | `test_retry_after_70s_runs_fresh_and_timed_out_attempt_cannot_write` | After a 10 s cut-off, a retry with the same key after 70 s runs fresh and saves one row; the cut-off attempt saves nothing | CP-17 |
+| Retries | `test_telemetry_retry_after_70s_runs_fresh_and_enqueues_once` | Telemetry retry key expires after 70 s; the retry enqueues the batch, the cut-off attempt cannot also enqueue it | CP-19 |
 | Retries | `test_in_progress_idempotency_key_expires_after_timeout_and_can_retry` | A key left "in progress" by a crash is treated as failed after 75 s (15 s timeout + 60 s) and the retry runs; a retry after a `timed_out` or `error` attempt also runs again | CP-47 |
 | Partial failure | `test_poison_message_moves_to_dead_letter_after_5_deliveries` | Bad item goes to DLQ with error and trace id; others continue | CP-08, CP-20 |
 | Partial failure | `test_outbox_event_published_only_after_commit` | Rolled-back change publishes nothing; committed change publishes once | CP-16 |
@@ -475,7 +479,7 @@ from Phase 2 tickets (marked P2) add coverage later. QA writes a target-vs-actua
 | Tenancy | `test_rls_blocks_query_without_tenant_setting` | Query without `app.tenant_id` errors | CP-05 |
 | Tenancy | `test_app_role_cannot_bypass_rls` | `cp_app` cannot see other tenants, even reading partitions | CP-05, CP-13 |
 | Tenancy | `test_child_cannot_reference_other_tenant_parent` | Composite foreign keys hold | CP-05 |
-| Tenancy | `test_app_role_cannot_create_or_drop_partitions_directly` | `cp_app` has no DDL rights; partitions change only through the `cp_owner` SECURITY DEFINER functions | CP-13 |
+| Tenancy | `test_app_role_cannot_create_or_drop_partitions_directly` | `cp_app` has no DDL rights; partitions change only through the `cp_owner` SECURITY DEFINER functions; a role with only `PUBLIC` rights can call neither function | CP-13 |
 | Tenancy | `test_retention_function_refuses_cutoff_inside_14_days` | The drop function refuses any cutoff newer than today minus 14 days; `cp_app` cannot call it, `cp_scheduler` can | CP-13, CP-42 (P2) |
 | Tenancy | `test_cross_tenant_access_returns_404_for_every_endpoint` | Each endpoint tried with another tenant's id | Per-endpoint tests in every MVP endpoint ticket; full sweep CP-34 (P2) |
 | Tenancy | `test_agent_tools_cannot_read_other_tenant` | Tools under tenant A never return tenant B data | CP-36 |
@@ -800,6 +804,7 @@ Each ticket shows whether it is **MVP (wave Mn)** or **Phase 2 (wave Pn)**.
   3. All errors return RFC 9457 problem+json with `trace_id`; unhandled exceptions return 500 with no stack trace (tested).
   4. `test_logs_are_json_with_trace_id` passes; incoming `traceparent` is continued and `X-Trace-Id` returned.
   5. `GET /healthz` returns 200 in under **50 ms**; `GET /readyz` returns 503 when Postgres or Redis is unreachable.
+  6. **Hard timeout in the request pipeline** (director decision, section 3): every request passes through one timeout step that stops it at the endpoint's own hard timeout, or at the default of **10 s** if the endpoint states none (the assistant states **15 s**). A stopped request is cancelled (its work is abandoned and any open database transaction is rolled back, so nothing it started is saved), returns **504** problem+json of type `timeout` with `trace_id`, and logs one JSON line with the route and elapsed time. `test_request_cut_off_at_default_hard_timeout_10s` proves a deliberately slow endpoint with no stated timeout gets its 504 within **10.5 s** and that its code after the 10 s mark never runs.
 
 #### CP-07: Keyset pagination helper (ADR 0002)
 - MVP (M2) | Owner: builder | Risk: risk:medium | Size: ~400 lines | Depends on: CP-02
@@ -864,7 +869,7 @@ Each ticket shows whether it is **MVP (wave Mn)** or **Phase 2 (wave Pn)**.
 - Files: as in overlap check
 - Acceptance:
   1. Creates `telemetry_points` (partitioned by day), `telemetry_hourly`, `telemetry_daily`, `forecast_runs`, `forecasts`, `forecast_points`, `policy_documents`, `document_chunks` (`vector(1024)` for Voyage AI, HNSW cosine, GIN on tsv), `planner_questions` (with `route` and `models_used`), all tenant-owned with forced RLS.
-  2. Creates partitions from 7 days back to **30 days** ahead (so the MVP runs without CP-42) and two SQL functions: `cp_create_telemetry_partitions(days_ahead int)` (used by CP-20) and `cp_drop_telemetry_partitions_before(cutoff date)` (used by CP-42's retention job; refuses any cutoff newer than today minus **14 days**, the approved raw retention, Q6). Both are `SECURITY DEFINER` (they run with their owner's rights), owned by `cp_owner`, with a fixed `search_path = pg_catalog, public, pg_temp`, and every table they touch is written with its schema (e.g. `public.telemetry_points`) so nothing can be swapped in by name. `EXECUTE` on the create function is granted to `cp_app`; `EXECUTE` on the drop function is granted **only** to `cp_scheduler`, never to `cp_app` (and revoked from `PUBLIC`). `cp_app` is **never** granted `CREATE`, DDL rights or privileges on individual partitions. A test (`test_app_role_cannot_create_or_drop_partitions_directly`) proves `cp_app` cannot run `CREATE TABLE ... PARTITION OF` or `DROP TABLE` itself but can call the create function; `test_retention_function_refuses_cutoff_inside_14_days` proves the drop function refuses a cutoff inside 14 days and that `cp_app` cannot call it while `cp_scheduler` can.
+  2. Creates partitions from 7 days back to **30 days** ahead (so the MVP runs without CP-42) and two SQL functions: `cp_create_telemetry_partitions(days_ahead int)` (used by CP-20) and `cp_drop_telemetry_partitions_before(cutoff date)` (used by CP-42's retention job; refuses any cutoff newer than today minus **14 days**, the approved raw retention, Q6). Both are `SECURITY DEFINER` (they run with their owner's rights), owned by `cp_owner`, with a fixed `search_path = pg_catalog, public, pg_temp`, and every table they touch is written with its schema (e.g. `public.telemetry_points`) so nothing can be swapped in by name. `EXECUTE` on the create function is granted to `cp_app` (and revoked from `PUBLIC`); `EXECUTE` on the drop function is granted **only** to `cp_scheduler`, never to `cp_app` (and revoked from `PUBLIC`). `cp_app` is **never** granted `CREATE`, DDL rights or privileges on individual partitions. A test (`test_app_role_cannot_create_or_drop_partitions_directly`) proves `cp_app` cannot run `CREATE TABLE ... PARTITION OF` or `DROP TABLE` itself but can call the create function, and that a role with no grant (only what `PUBLIC` has) can call neither function; `test_retention_function_refuses_cutoff_inside_14_days` proves the drop function refuses a cutoff inside 14 days and that `cp_app` cannot call it while `cp_scheduler` can.
   3. `messages.py` defines the versioned telemetry stream message (`v`, `tenant_id`, `rack_id`, `room_id`, `site_id`, `metric`, `ts`, `value`, `batch_id`, `traceparent`) with Pydantic validation.
   4. Existing tenancy and migration named tests now cover the new tables and pass; upgrade/downgrade round trip passes on seeded data.
   5. PR shows `EXPLAIN` proving index use for `(tenant_id, rack_id, metric, ts)` and `(tenant_id, room_id, metric, day)` lookups.
@@ -903,9 +908,10 @@ Each ticket shows whether it is **MVP (wave Mn)** or **Phase 2 (wave Pn)**.
 - Files: as in overlap check
 - Acceptance:
   1. A reusable dependency stores `(tenant_id, user_id, key)` with request hash and response for **24 h**; `POST` without the header -> 422.
-  2. `test_idempotency_key_replay_returns_original_response` and `test_idempotency_key_reuse_with_different_body_returns_422` pass; concurrent duplicate in flight -> 409. An in-progress key older than the endpoint's hard timeout plus **60 s** (a crashed first attempt) is treated as failed and the retry runs (section 3; proven for the assistant by `test_in_progress_idempotency_key_expires_after_timeout_and_can_retry` in CP-47).
-  3. The same key used by two different tenants, or by two users in the same tenant, does not collide (`test_idempotency_key_scoped_per_tenant_and_user`).
-  4. Expired keys are purged by a batched delete function (5,000 rows per batch).
+  2. `test_idempotency_key_replay_returns_original_response` and `test_idempotency_key_reuse_with_different_body_returns_422` pass; concurrent duplicate in flight -> 409. An in-progress key older than the endpoint's hard timeout plus **60 s** (a crashed or timed-out first attempt) is treated as failed and the retry runs fresh. That is **70 s by default** (the 10 s default hard timeout from CP-06 plus 60 s) and 75 s for the assistant (section 3; proven for the assistant by `test_in_progress_idempotency_key_expires_after_timeout_and_can_retry` in CP-47).
+  3. **Only one attempt can save its work.** Each attempt that claims a key gets a new attempt number stored on the key; when a retry takes over an expired key it stores its own number. An attempt saves its changes only if, at the moment it saves, the key still carries its number (checked in the same database transaction as its changes); otherwise its whole transaction is rolled back. This is a "fencing" check: a late attempt is fenced out. `test_retry_after_70s_runs_fresh_and_timed_out_attempt_cannot_write` proves that after a request is cut off at 10 s, a retry with the same key after **70 s** runs fresh and saves exactly one row, and that the cut-off attempt, if forced to try saving afterwards, saves nothing (row count stays **1**).
+  4. The same key used by two different tenants, or by two users in the same tenant, does not collide (`test_idempotency_key_scoped_per_tenant_and_user`).
+  5. Expired keys are purged by a batched delete function (5,000 rows per batch).
 
 #### CP-18: Capacity and headroom service
 - MVP (M3) | Owner: analytics | Risk: risk:medium | Size: ~450 lines | Depends on: CP-04, CP-05
@@ -924,7 +930,7 @@ Each ticket shows whether it is **MVP (wave Mn)** or **Phase 2 (wave Pn)**.
   1. `POST /v1/telemetry/batches` (role `ingestor`) validates 1-500 points, body <= 256 KB, `ts` window (+5 min / -7 days), value ranges, and rack ownership via a per-tenant rack-id cache refreshed every **60 s**.
   2. Returns **202** with per-item status; `test_batch_ingest_returns_per_item_status` passes.
   3. Full queue -> **429** + `Retry-After` 1..30 s and nothing enqueued (`test_ingest_returns_429_with_retry_after_when_queue_full`); Redis down -> **503** + `Retry-After: 5`.
-  4. `Idempotency-Key` replay within 24 h returns the original response without re-enqueueing (stored in Redis under `cp:idem:telemetry:<tenant_id>:<key>`, so the key is always scoped to the sending customer). The same key sent by two different tenants does not collide: both batches are stored and neither gets the other's response (`test_telemetry_idempotency_key_scoped_per_tenant`).
+  4. `Idempotency-Key` replay within 24 h returns the original response without re-enqueueing (stored in Redis under `cp:idem:telemetry:<tenant_id>:<key>`, so the key is always scoped to the sending customer). The same key sent by two different tenants does not collide: both batches are stored and neither gets the other's response (`test_telemetry_idempotency_key_scoped_per_tenant`). Retry-key expiry follows the same rule as CP-17: this endpoint has no stated hard timeout, so it uses the **10 s** default and an in-progress key expires after **70 s by default** (10 s + 60 s); after that a retry with the same key runs fresh. The same "only one attempt can save" rule applies: the check that the key still carries this attempt's number and the enqueue happen in one atomic Redis step, so a cut-off attempt cannot also enqueue its batch (`test_telemetry_retry_after_70s_runs_fresh_and_enqueues_once`).
   5. Endpoint p95 <= **400 ms** for 500-point batches in a local micro-benchmark included in the PR.
   6. Authorization tests: non-ingestor -> 403; rack from another tenant -> item `rejected` with reason `unknown_rack`.
 
@@ -1314,6 +1320,7 @@ Totals: MVP **32** tickets in **8** waves; Phase 2 **22** tickets in **4** waves
 | Q12 | Screen in the MVP? | **No.** The MVP stays API-only (32 tickets, section 9.1 accepted as laid out). The planner chat screen (CP-50) is the first screen built in Phase 2, right after CP-26 (rate limits and security headers); see "Phase 2 order" in section 9.2 |
 | Q13 | Real login provider (CP-44) | **Decision point: the start of Phase 2.** The director chooses the provider before any Phase 2 work that leaves the laptop; CP-44 and CP-49 cannot start until then |
 | Q14 | Phase 2 staging host (CP-49) | **The director's home K3s cluster (Raspberry Pi, arm64).** Images already build for arm64 and amd64. The staging availability SLO is set when CP-49 is built |
+| Timeout | Default hard timeout for endpoints that do not state their own | **10 s** (director decision). So a retry key left "in progress" expires after 10 s + 60 s = **70 s** by default (the assistant keeps its own 15 s timeout, so 75 s). Enforced in the request pipeline by CP-06; retry-key expiry in CP-17 (API writes) and CP-19 (telemetry); see section 3 and ADR 0001 |
 | ADRs | ADR 0001 to 0008 | **All Accepted on 2026-10-17, approved by the director** |
 | PR size | This pull request is about 1,900 changed lines (over the ~800 guideline) | **Exception approved by the director** because it is docs only (Confirmed by the director in a PR comment on PR #5; the director's merge of this PR is the final record) |
 

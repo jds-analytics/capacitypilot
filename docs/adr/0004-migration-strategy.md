@@ -39,7 +39,7 @@ Plain-English terms:
 1. **Tool**: Alembic in `core/migrations/`, run only as the `cp_owner` role via `make migrate`
    (part of `make up`). App roles cannot change schema. The only exceptions are two owner-rights
    (`SECURITY DEFINER`) partition functions: `cp_create_telemetry_partitions` (`cp_app` may call) and
-   `cp_drop_telemetry_partitions_before` (only `cp_scheduler` may call; see ADR 0003).
+   `cp_drop_telemetry_partitions_before` (only `cp_scheduler` may call; see ADR 0003). `EXECUTE` on both is revoked from `PUBLIC`.
 2. **Three phases, separate releases**:
    - Expand: add tables, nullable columns, new indexes (`CREATE INDEX CONCURRENTLY`,
      which cannot run inside a transaction, so use Alembic's autocommit block:
