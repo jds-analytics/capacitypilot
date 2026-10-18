@@ -61,7 +61,7 @@ Plain-English terms:
    dollars and latency; prompts containing user data are not written to logs (security rule).
 9. **Model and embedding vendor** are configuration (`CP_AGENT_MODEL`, `CP_EMBED_MODEL`), chosen by
    the director (open question). The embedding vector size is fixed in the database once chosen; the
-   schema assumes **1,024 dimensions** until then.
+   schema uses **1,024 dimensions** (embedding vendor: Voyage AI, per the director).
 
 ## Consequences
 

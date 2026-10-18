@@ -125,7 +125,7 @@ security, indexes leading on `tenant_id`, and composite foreign keys `(tenant_id
 | `allocations` [T] | id, reservation_id, rack_id, kw, ru, allocated_at, released_at | Belongs to reservation and rack. Active = released_at is null |
 | `reservation_events` [T] | id, reservation_id, from_status, to_status, actor_id, note, at, trace_id | Append-only history, written in the same transaction as the change |
 | `policy_documents` [T] | id, title, filename, content_type (`text/markdown` or `text/plain`), size_bytes (<= 2 MB), content_sha256, status (`pending`, `embedded`, `failed`), chunk_count, uploaded_by, created_at, deleted_at | Unique `(tenant_id, content_sha256)` (same file twice is one document) |
-| `document_chunks` [T] | id, document_id, ordinal, text, token_count, tsv (full-text vector), embedding `vector(1024)` | HNSW cosine index on embedding; GIN index on tsv. Dimension changes if the chosen embedding model differs (open question Q3) |
+| `document_chunks` [T] | id, document_id, ordinal, text, token_count, tsv (full-text vector), embedding `vector(1024)` | HNSW cosine index on embedding; GIN index on tsv. Dimension changes only if the embedding model is later switched away from Voyage (Q3 answered) |
 | `planner_questions` [T] | id, actor_id, question (<= 2,000 chars), answer, status (`answered`, `refused`, `timed_out`, `budget_stopped`, `error`), citations (json), tool_calls (json), input_tokens, output_tokens, cost_usd, ttft_ms, total_ms, model, created_at | One row per question |
 | `outbox_events` [T] | id, stream, event_type, aggregate_type, aggregate_id, payload (json), traceparent, created_at, published_at, attempts | Written in the same transaction as the business change |
 | `processed_events` [T] | event_id, consumer, processed_at | Unique `(consumer, event_id)` so repeats are skipped |
@@ -291,7 +291,7 @@ answers right, refuse off-topic requests, ignore planted instructions, start ans
   target-vs-actual table to `reports/eval/`, and exits non-zero if any gated target fails.
 - Agent loop: **max 8 tool calls**, **hard timeout 15 s**, `max_tokens` **always set** (1,024 for the
   final answer, 512 for intermediate steps, 512 for judge calls).
-- Model: Anthropic Claude (exact model is open question Q2). Embeddings: hosted model (vendor is Q3).
+- Model: Anthropic Claude (exact model is open question Q2). Embeddings: Voyage AI hosted model (Q3 answered).
 
 ### Targets
 
@@ -417,7 +417,7 @@ Each has a mitigation below.
 | R8 | Prompt injection through uploaded policy documents | Medium | High | Untrusted-content wrapping, read-only allow-listed tools, tenant never a tool argument, 20 injection cases at 100% target |
 | R9 | Two approvals over-allocate the same room | Medium | High | Row lock on room during check; concurrency test with 20 parallel approvals |
 | R10 | Laptop load tests are noisy, giving flaky SLO results | Medium | Low | Fixed Colima size, warm-up, 3 runs with the median reported |
-| R11 | Embedding vendor not chosen, blocking real document search (CP-27) | Medium | Medium | Interface + deterministic fake for tests; real adapter needs Q3 answered before Wave 4 |
+| R11 | Voyage AI embeddings may miss the recall@5 target, or the vendor may change terms (CP-27) | Medium | Medium | `Embedder` interface + deterministic fake for tests; vendor swap is one ticket plus a re-embed; first `make eval` checks recall |
 | R12 | Dependencies added early show up in vulnerability scans | Medium | Low | Trivy gate already in CI; Dependabot (CP-41); pin versions |
 | R13 | About 50 PRs need director approval | High | Medium | Small PRs (under 800 lines), plain-English summaries, waves let several merge per sitting |
 | R14 | Forecast and capacity math defined inconsistently across API, web and assistant | Medium | Medium | Single definitions in docs/metrics.md and one capacity service used by all |
@@ -737,12 +737,12 @@ CP-27 = `api/src/cp_api/routers/documents.py`, `api/src/cp_api/schemas/documents
   5. Threat model updated for all Wave 4 endpoints.
 
 #### CP-27: Document upload, chunking and embedding pipeline
-- Owner: builder | Risk: risk:high (queues, external AI call) | Size: ~750 lines | Depends on: CP-09, CP-12, CP-13, CP-16, CP-17; real adapter needs Q3
+- Owner: builder | Risk: risk:high (queues, external AI call) | Size: ~750 lines | Depends on: CP-09, CP-12, CP-13, CP-16, CP-17; vendor is Voyage AI (Q3 answered)
 - Files: as in overlap check
 - Acceptance:
   1. `POST /v1/documents` accepts `.md`/`.txt` up to 2 MB, dedupes by SHA-256, stores the document `pending` and an outbox event to `cp:documents` (cap **500**, 429 when full) in one transaction.
   2. Consumer chunks to about **500 tokens** with **50-token** overlap, embeds in batches through the resilience client (timeouts, retries), writes chunks and tsv, marks `embedded`; failures retry then dead-letter and mark `failed`.
-  3. `Embedder` interface with a deterministic `fake` provider (tests) and the chosen vendor's adapter; vector size checked against the column (1,024 until Q3).
+  3. `Embedder` interface with a deterministic `fake` provider (tests) and the Voyage AI adapter; vector size checked against the column (1,024).
   4. A 2 MB document is searchable within **120 s** locally; delete removes chunks.
   5. Authorization tests: only admin uploads/deletes; cross-tenant -> 404.
 
@@ -1034,7 +1034,7 @@ CP-52 = no repository files (opens issues only). No shared files.
 
 - Users and roles are placeholders until auth is chosen; `actor_id` is a string from the auth layer.
 - Policy documents are Markdown or plain text only in v1 (PDF would add a parsing dependency).
-- Embedding vector size is assumed to be **1,024** until the vendor is chosen.
+- Embedding vendor is Voyage AI (director's answer to Q3); vector size is **1,024**.
 - Local tracing uses an in-memory exporter in tests and an optional OTLP endpoint; no trace viewer is
   added because only four host ports are allowed.
 - The 2,000 points/second ingest target is headroom; the synthetic steady state is about 85 points/second.
@@ -1055,9 +1055,9 @@ Please answer each with a choice or "use the proposal". Items marked **blocks** 
 2. **Q2. Which Claude model?** A fast, low-cost Claude model is the safest way to meet **$0.02 per
    question** and **1.5 s** to first token. A larger model may answer better but could break the cost
    and speed targets. Proposal: start with the fast model, compare a larger one in `make eval`.
-3. **Q3. Which embedding vendor and model (needed before Wave 4, CP-27)?** Proposal: Voyage AI (the
-   embedding partner Anthropic recommends) with a 1,024-dimension model. This fixes the database
-   vector size.
+3. **Q3. Embedding vendor. ANSWERED by the director: Voyage AI.** A 1,024-dimension Voyage model fixes
+   the database vector size. CP-27 is no longer blocked. If the first `make eval` misses recall@5 >= 0.85,
+   switching vendors is one ticket plus a re-embed of the (synthetic) documents.
 4. **Q4. Forecast accuracy targets.** Approve the PROPOSED targets in section 6 (kW WAPE <= 8% for
    1-30 days, <= 12% for 31-90 days; RU <= 5% / <= 8%; interval coverage bands; beat baseline by >= 15%)?
 5. **Q5. Reservation approvals.** Who may approve (proposal: `approver` and `admin` roles, per tenant)?
