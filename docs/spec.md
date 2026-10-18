@@ -1,8 +1,8 @@
 # CapacityPilot specification
 
-- Status: **Draft for director approval.** The director answered open questions Q1 to Q11 on
-  2026-10-17; those answers are recorded below and in section 11. Nothing is built until JD approves
-  this spec.
+- Status: **Draft for director approval.** The director answered open questions Q1 to Q14 on
+  2026-10-17, and ADRs 0001 to 0008 are Accepted; those answers are recorded below and in section 11.
+  This spec becomes **approved when the director merges this pull request**. Nothing is built until then.
 - Author: architect agent
 - Date: 2026-10-17
 - Decision records: docs/adr/0001 to 0008
@@ -133,12 +133,13 @@ security, indexes leading on `tenant_id`, and composite foreign keys `(tenant_id
 | `planner_questions` [T] | id, actor_id, question (<= 2,000 chars), route (`out_of_scope`, `simple_lookup`, `full`), models_used, answer, status (`answered`, `refused`, `timed_out`, `budget_stopped`, `error`), citations (json), tool_calls (json), input_tokens, output_tokens (per model, json), cost_usd, ttft_ms, total_ms, created_at | One row per question |
 | `outbox_events` [T] | id, stream, event_type, aggregate_type, aggregate_id, payload (json), traceparent, created_at, published_at, attempts | Written in the same transaction as the business change |
 | `processed_events` [T] | event_id, consumer, processed_at | Unique `(consumer, event_id)` so repeats are skipped |
-| `idempotency_keys` [T] | key, method, path, request_sha256, status_code, response_body, created_at, expires_at (24 h) | Primary key `(tenant_id, key)` |
+| `idempotency_keys` [T] | user_id, key, method, path, request_sha256, status_code, response_body, created_at, expires_at (24 h) | Primary key `(tenant_id, user_id, key)`, so two users in the same tenant never share a key |
 | `audit_log` [T] | id, actor_id, action, target_type, target_id, at, trace_id, detail (json, no secrets) | Append-only |
 | `job_checkpoints` | job_name, tenant_id (nullable), cursor (json), updated_at | Resumable batch jobs (ADR 0004) |
 
 Users are **not** stored yet: `actor_id` is the user id string supplied by the auth layer (ADR 0008).
-A `users`/`memberships` table is added when a real login provider is chosen (CP-44, Phase 2).
+A `users`/`memberships` table is added when a real login provider is chosen (CP-44, Phase 2), in
+migration `0003_users_memberships.py`, which is the only migration in Phase 2 wave P2 (ADR 0004 rule 7).
 
 ### Roles and permissions (approved Q5; login is the local dev provider for now, Q1)
 
@@ -168,10 +169,18 @@ twice. Errors use one standard format. Endpoints marked **P2** arrive in Phase 2
 ### Conventions (apply to every endpoint)
 - Base URL locally: `http://localhost:18000/v1`. Web app (Phase 2): `http://localhost:18080`.
 - **Auth**: `Authorization: Bearer <token>`; the auth layer yields `tenant_id`, `user_id`, `roles`.
-  Missing/invalid token -> **401**. Wrong role -> **403**. Another tenant's object -> **404**.
+  Missing/invalid token, or a token that yields no tenant -> **401** (the caller is not properly
+  logged in, so we cannot know whose data they may see; 401 tells them to log in again).
+  Wrong role -> **403**. Another tenant's object -> **404**.
 - **Idempotency**: `Idempotency-Key` header (1-128 printable characters) is **required** on every
-  `POST` and accepted on `PATCH`/`DELETE`. Same key + same body within 24 h returns the original
-  response; same key + different body -> **422**; same key still in progress -> **409**.
+  `POST` and accepted on `PATCH`/`DELETE`. Keys are stored per tenant **and per user**
+  (`(tenant_id, user_id, key)`; telemetry uses `(tenant_id, key)` because the sender is a machine
+  credential, see CP-19). Same key + same body within 24 h returns the original response; same key +
+  different body -> **422**; same key still in progress -> **409**.
+  **Streaming assistant (`POST /v1/planner/questions`)**: a repeat while the first answer is still
+  streaming -> **409** + `Retry-After: 2`; a repeat after it finished returns the stored answer as a
+  plain JSON body (the same shape as `GET /v1/planner/questions/{id}`, status **200**, header
+  `Idempotent-Replay: true`), with no new model calls and no new cost.
 - **Pagination**: `limit` (1-100, default 50), `cursor`, `sort` from a per-endpoint allow-list.
   Response `{items, next_cursor}`.
 - **Errors**: RFC 9457 `application/problem+json` with `type`, `title`, `status`, `detail`,
@@ -438,6 +447,9 @@ from Phase 2 tickets (marked P2) add coverage later. QA writes a target-vs-actua
 | Retries | `test_every_outbound_call_has_timeout` | No HTTP/LLM/embedding client is created without a timeout (code scan + runtime) | CP-09 |
 | Retries | `test_idempotency_key_replay_returns_original_response` | Repeat POST returns the same response, no second row | CP-17 |
 | Retries | `test_idempotency_key_reuse_with_different_body_returns_422` | Key misuse detected | CP-17 |
+| Retries | `test_idempotency_key_scoped_per_tenant_and_user` | Same key from two tenants or two users never collides | CP-17 |
+| Retries | `test_telemetry_idempotency_key_scoped_per_tenant` | Same telemetry key from two tenants: both batches stored, no shared reply | CP-19 |
+| Retries | `test_planner_idempotent_replay_returns_stored_answer` | Repeat while streaming -> 409; repeat after `done` -> stored answer, no new model calls | CP-47 |
 | Partial failure | `test_poison_message_moves_to_dead_letter_after_5_deliveries` | Bad item goes to DLQ with error and trace id; others continue | CP-08, CP-20 |
 | Partial failure | `test_outbox_event_published_only_after_commit` | Rolled-back change publishes nothing; committed change publishes once | CP-16 |
 | Partial failure | `test_outbox_relay_crash_does_not_lose_or_duplicate_effects` | Kill relay mid-batch; every event's effect happens exactly once | CP-16 |
@@ -455,6 +467,7 @@ from Phase 2 tickets (marked P2) add coverage later. QA writes a target-vs-actua
 | Tenancy | `test_rls_blocks_query_without_tenant_setting` | Query without `app.tenant_id` errors | CP-05 |
 | Tenancy | `test_app_role_cannot_bypass_rls` | `cp_app` cannot see other tenants, even reading partitions | CP-05, CP-13 |
 | Tenancy | `test_child_cannot_reference_other_tenant_parent` | Composite foreign keys hold | CP-05 |
+| Tenancy | `test_app_role_cannot_create_or_drop_partitions_directly` | `cp_app` has no DDL rights; partitions change only through the `cp_owner` SECURITY DEFINER functions | CP-13 |
 | Tenancy | `test_cross_tenant_access_returns_404_for_every_endpoint` | Each endpoint tried with another tenant's id | Per-endpoint tests in every MVP endpoint ticket; full sweep CP-34 (P2) |
 | Tenancy | `test_agent_tools_cannot_read_other_tenant` | Tools under tenant A never return tenant B data | CP-36 |
 | Observability | `test_logs_are_json_with_trace_id` | Every log line is JSON with `trace_id` | CP-06 |
@@ -464,6 +477,7 @@ from Phase 2 tickets (marked P2) add coverage later. QA writes a target-vs-actua
 | Security | `test_every_route_has_authorization_test` | Every route appears in an authorization test, including a cross-tenant case | CP-12 |
 | Security | `test_dev_auth_refuses_non_local_env` | Fake login cannot run outside local/test | CP-12 |
 | Security | `test_security_headers_present` and `test_rate_limit_per_tenant` | Headers, CORS allow-list, 429 on abuse | CP-26 (P2) |
+| Security | `check-stack.sh: db_and_redis_bound_to_localhost` and `check-stack.sh: redis_requires_auth` | Postgres and Redis listen on 127.0.0.1 only; Redis refuses commands without a password | CP-01 |
 | Security | `check-images.sh: containers_run_as_non_root` | Every image runs as a non-root user, read-only root filesystem | CP-15 |
 | Security | `check-actions-pinned.sh: actions_pinned_to_sha` | Every GitHub Action pinned to a 40-character commit SHA (already true in CI today) | CP-41 (P2) |
 | AI rules | `test_agent_stops_after_8_tool_calls` | 9th tool call is never executed, across router, Haiku and Sonnet steps | CP-43 |
@@ -696,7 +710,9 @@ Overlap check per Phase 2 wave:
   `contracts/openapi/paths/{capacity,utilization}.yaml`, `contracts/openapi/components/capacity.yaml`,
   `api/tests/capacity/**`; CP-34 = `tests/integration/**`, `reports/standards/**`;
   CP-35 = `apps/web/lib/api/**`, `apps/web/app/sites/**`, `apps/web/e2e/sites.spec.ts`;
-  CP-44 = `api/src/cp_api/auth/providers/**`, `api/tests/auth/providers/**`, `docs/threat-model.md`
+  CP-44 = `api/src/cp_api/auth/providers/**`, `api/tests/auth/providers/**`, `docs/threat-model.md`,
+  `core/migrations/versions/0003_users_memberships.py`, `core/src/cp_core/db/models/identity.py`,
+  `core/tests/db/test_0003_users.py` (the only P2 ticket with a migration, ADR 0004 rule 7)
   (and `uv.lock` if a library is needed; it is the only P2 ticket allowed to touch it);
   CP-48 = `.github/workflows/nightly-eval.yml`; CP-53 = `infra/docker/web.Dockerfile`,
   `infra/compose/compose.yaml`.
@@ -723,6 +739,9 @@ Each ticket shows whether it is **MVP (wave Mn)** or **Phase 2 (wave Pn)**.
   4. `.env.example` lists every planned variable name with empty or dummy values only: DB URLs per role, `REDIS_URL`, `CP_ENV`, `CP_AUTH_PROVIDER`, `CP_AUTH_DEV_SIGNING_KEY`, `CURSOR_SIGNING_KEY`, `ANTHROPIC_API_KEY`, `CP_AGENT_ROUTER_MODEL` (`claude-haiku-5-5`), `CP_AGENT_ANSWER_MODEL` (`claude-sonnet-5-5`), `CP_EVAL_COMPARE_MODEL` (`claude-opus-5-5`), `CP_EVAL_JUDGE_MODEL` (`claude-sonnet-5-5`), `CP_EMBED_PROVIDER` (`voyage`), `CP_EMBED_MODEL`, `CP_EMBED_API_KEY`, `OTEL_EXPORTER_OTLP_ENDPOINT`, stream caps, worker concurrency.
   5. Both images are multi-arch (linux/arm64 and linux/amd64), pinned by digest; containers run as non-root users.
   6. No host ports other than 15432, 16379, 18000 and 18080 are used by the stack.
+  7. Postgres and Redis publish their ports on **127.0.0.1 only** (for example `127.0.0.1:15432:5432`), so nothing else on the network can reach them. This matters because workers trust the `tenant_id` inside queue messages (ADR 0008), so open Redis access would bypass tenant isolation.
+  8. Redis requires a password: an ACL user `cp_app` with password from `REDIS_PASSWORD`, and the `default` user disabled. `.env.example` adds `REDIS_PASSWORD` (empty) and `REDIS_URL` includes the user name. Database role passwords also come only from `.env`.
+  9. `check-stack.sh` proves both, as named checks: `check-stack.sh: db_and_redis_bound_to_localhost` (inspects published port bindings; fails if any is `0.0.0.0` or `::`) and `check-stack.sh: redis_requires_auth` (`PING` without credentials must return `NOAUTH`; with credentials must return `PONG`).
 
 #### CP-02: Python workspace, dependency baseline, Makefile, lint and type-check config
 - MVP (M1) | Owner: builder | Risk: risk:high (dependencies) | Size: ~550 lines | Depends on: none
@@ -836,7 +855,7 @@ Each ticket shows whether it is **MVP (wave Mn)** or **Phase 2 (wave Pn)**.
 - Files: as in overlap check
 - Acceptance:
   1. Creates `telemetry_points` (partitioned by day), `telemetry_hourly`, `telemetry_daily`, `forecast_runs`, `forecasts`, `forecast_points`, `policy_documents`, `document_chunks` (`vector(1024)` for Voyage AI, HNSW cosine, GIN on tsv), `planner_questions` (with `route` and `models_used`), all tenant-owned with forced RLS.
-  2. Creates partitions from 7 days back to **30 days** ahead (so the MVP runs without CP-42) and a SQL function `cp_create_telemetry_partitions(days_ahead int)`; `cp_app` has no privileges on individual partitions.
+  2. Creates partitions from 7 days back to **30 days** ahead (so the MVP runs without CP-42) and two SQL functions: `cp_create_telemetry_partitions(days_ahead int)` (used by CP-20) and `cp_drop_telemetry_partitions_before(cutoff date)` (used by CP-42's retention job; refuses a cutoff of today or later). Both are `SECURITY DEFINER` (they run with their owner's rights), owned by `cp_owner`, with a fixed `search_path = pg_catalog, public`; `cp_app` is granted `EXECUTE` on them and nothing else. `cp_app` is **never** granted `CREATE`, DDL rights or privileges on individual partitions. A test (`test_app_role_cannot_create_or_drop_partitions_directly`) proves `cp_app` cannot run `CREATE TABLE ... PARTITION OF` or `DROP TABLE` itself but can call the function.
   3. `messages.py` defines the versioned telemetry stream message (`v`, `tenant_id`, `rack_id`, `room_id`, `site_id`, `metric`, `ts`, `value`, `batch_id`, `traceparent`) with Pydantic validation.
   4. Existing tenancy and migration named tests now cover the new tables and pass; upgrade/downgrade round trip passes on seeded data.
   5. PR shows `EXPLAIN` proving index use for `(tenant_id, rack_id, metric, ts)` and `(tenant_id, room_id, metric, day)` lookups.
@@ -874,9 +893,9 @@ Each ticket shows whether it is **MVP (wave Mn)** or **Phase 2 (wave Pn)**.
 - MVP (M3) | Owner: builder | Risk: risk:medium | Size: ~400 lines | Depends on: CP-05, CP-06
 - Files: as in overlap check
 - Acceptance:
-  1. A reusable dependency stores `(tenant_id, key)` with request hash and response for **24 h**; `POST` without the header -> 422.
+  1. A reusable dependency stores `(tenant_id, user_id, key)` with request hash and response for **24 h**; `POST` without the header -> 422.
   2. `test_idempotency_key_replay_returns_original_response` and `test_idempotency_key_reuse_with_different_body_returns_422` pass; concurrent duplicate in flight -> 409.
-  3. The same key used by two different tenants does not collide (tested).
+  3. The same key used by two different tenants, or by two users in the same tenant, does not collide (`test_idempotency_key_scoped_per_tenant_and_user`).
   4. Expired keys are purged by a batched delete function (5,000 rows per batch).
 
 #### CP-18: Capacity and headroom service
@@ -896,7 +915,7 @@ Each ticket shows whether it is **MVP (wave Mn)** or **Phase 2 (wave Pn)**.
   1. `POST /v1/telemetry/batches` (role `ingestor`) validates 1-500 points, body <= 256 KB, `ts` window (+5 min / -7 days), value ranges, and rack ownership via a per-tenant rack-id cache refreshed every **60 s**.
   2. Returns **202** with per-item status; `test_batch_ingest_returns_per_item_status` passes.
   3. Full queue -> **429** + `Retry-After` 1..30 s and nothing enqueued (`test_ingest_returns_429_with_retry_after_when_queue_full`); Redis down -> **503** + `Retry-After: 5`.
-  4. `Idempotency-Key` replay within 24 h returns the original response without re-enqueueing (stored in Redis).
+  4. `Idempotency-Key` replay within 24 h returns the original response without re-enqueueing (stored in Redis under `cp:idem:telemetry:<tenant_id>:<key>`, so the key is always scoped to the sending customer). The same key sent by two different tenants does not collide: both batches are stored and neither gets the other's response (`test_telemetry_idempotency_key_scoped_per_tenant`).
   5. Endpoint p95 <= **400 ms** for 500-point batches in a local micro-benchmark included in the PR.
   6. Authorization tests: non-ingestor -> 403; rack from another tenant -> item `rejected` with reason `unknown_rack`.
 
@@ -906,7 +925,7 @@ Each ticket shows whether it is **MVP (wave Mn)** or **Phase 2 (wave Pn)**.
 - Acceptance:
   1. Consumer writes points with multi-row `INSERT ... ON CONFLICT DO NOTHING` in batches of up to **500**, under the message's tenant; re-delivering a batch 3 times stores each point once.
   2. Invalid or failing messages retry, then dead-letter after 5 deliveries; valid messages in the same read still commit.
-  3. Rollup schedule upserts hourly rollups for the last 2 hours every **5 min** and daily rollups at **00:15 UTC**; idempotent on re-run. The daily step also calls `cp_create_telemetry_partitions(14)` so the MVP never runs out of partitions (full maintenance and retention arrive in CP-42).
+  3. Rollup schedule upserts hourly rollups for the last 2 hours every **5 min** and daily rollups at **00:15 UTC**; idempotent on re-run. The daily step also calls `cp_create_telemetry_partitions(14)` so the MVP never runs out of partitions (full maintenance and retention arrive in CP-42). It calls the `SECURITY DEFINER` function owned by `cp_owner` (CP-13); `cp_app` gets no extra DDL rights for this.
   4. `utilization.py` returns latest and windowed used kW/RU per room and site from rollups, paginated by keyset.
   5. `test_trace_spans_api_to_queue_to_worker` passes; freshness p95 <= **10 s** at 2,000 points/second in an integration test of 60 s.
 
@@ -1111,7 +1130,7 @@ Each ticket shows whether it is **MVP (wave Mn)** or **Phase 2 (wave Pn)**.
 - Phase 2 (P1) | Owner: data-engineer | Risk: risk:high (deleting data) | Size: ~450 lines | Depends on: CP-16, CP-20
 - Files: as in overlap check
 - Acceptance:
-  1. Daily job creates telemetry partitions **14 days** ahead; retention job drops raw partitions older than **14 days** (approved Q6) and deletes hourly rollups older than **400 days** and daily rollups older than **5 years**, in batches of 5,000.
+  1. Daily job creates telemetry partitions **14 days** ahead; retention job drops raw partitions older than **14 days** (approved Q6) and deletes hourly rollups older than **400 days** and daily rollups older than **5 years**, in batches of 5,000. Partition create and drop go only through `SECURITY DEFINER` functions owned by `cp_owner` with a fixed `search_path` (`cp_create_telemetry_partitions` and `cp_drop_telemetry_partitions_before`, both created in CP-13's migration 0002, so this ticket adds no migration). `cp_app` may only `EXECUTE` them and is not granted DDL rights.
   2. `backfill_rollups` recomputes rollups for a date range in keyset batches of **5,000** rows, checkpointing in `job_checkpoints`; `test_backfill_is_batched_and_resumable` passes.
   3. Retention never drops a partition for today or the future (tested); dry-run mode lists what would be dropped.
   4. Each job logs rows affected and duration; PR shows `EXPLAIN` for the batch query.
@@ -1134,6 +1153,7 @@ Each ticket shows whether it is **MVP (wave Mn)** or **Phase 2 (wave Pn)**.
   2. Maps provider identities and groups to `tenant_id` and the roles in spec section 2.
   3. Failed logins back off per user and IP (security rule); logins and permission changes audit-logged.
   4. All existing authorization tests pass unchanged with the new provider in test mode; threat model updated.
+  5. Migration `0003_users_memberships.py` adds `users` and `memberships` as tenant-owned tables (forced RLS, composite tenant keys), expand-only and reversible; the tenancy and migration named tests cover them, and the PR shows upgrade and downgrade output.
 
 #### CP-45: Failure-injection tests
 - Phase 2 (P1) | Owner: qa | Risk: risk:low (tests only) | Size: ~500 lines | Depends on: CP-19, CP-20, CP-23, CP-27, CP-43
@@ -1164,6 +1184,7 @@ Each ticket shows whether it is **MVP (wave Mn)** or **Phase 2 (wave Pn)**.
   4. Each question stored in `planner_questions` with route, models used, status, citations, tool calls, tokens, cost in dollars and latency; list and detail endpoints paginated and tenant-scoped.
   5. End-to-end p95 time to first token <= **1.5 s** and total <= **6 s** measured through the API on the smoke eval subset.
   6. Authorization tests per route including cross-tenant -> 404 and `ingestor` -> 403.
+  7. Repeated `Idempotency-Key` behaves as in section 3: while the first answer is still streaming -> **409** + `Retry-After: 2`; after it finished -> **200** with the stored answer as JSON and `Idempotent-Replay: true`, with no new model calls and no added cost; `test_planner_idempotent_replay_returns_stored_answer` passes.
 
 #### CP-48: Nightly evaluation workflow
 - Phase 2 (P2) | Owner: release | Risk: risk:high (CI/CD) | Size: ~120 lines | Depends on: CP-37, CP-41, CP-43
@@ -1183,7 +1204,7 @@ Each ticket shows whether it is **MVP (wave Mn)** or **Phase 2 (wave Pn)**.
   4. Rollback to the previous image documented and tested once; availability SLO for staging set and measured.
 
 #### CP-50: Web planner chat screen
-- Phase 2 (P3) | Owner: builder | Risk: risk:medium | Size: ~500 lines | Depends on: CP-35, CP-47
+- Phase 2 (P3) | Owner: builder | Risk: risk:medium | Size: ~500 lines | Depends on: CP-11, CP-21, CP-22, CP-35, CP-47, CP-53
 - Files: as in overlap check
 - Acceptance:
   1. Chat input (<= 2,000 characters) streams the answer token by token, shows tool steps ("Checking DAL-1 forecast...") and clickable citations.
@@ -1285,7 +1306,7 @@ Totals: MVP **32** tickets in **8** waves; Phase 2 **22** tickets in **4** waves
 | Q13 | Real login provider (CP-44) | **Decision point: the start of Phase 2.** The director chooses the provider before any Phase 2 work that leaves the laptop; CP-44 and CP-49 cannot start until then |
 | Q14 | Phase 2 staging host (CP-49) | **The director's home K3s cluster (Raspberry Pi, arm64).** Images already build for arm64 and amd64. The staging availability SLO is set when CP-49 is built |
 | ADRs | ADR 0001 to 0008 | **All Accepted on 2026-10-17, approved by the director** |
-| PR size | This pull request is about 2,300 lines (over the ~800 guideline) | **Exception accepted by the director** because it is docs only |
+| PR size | This pull request is about 1,900 changed lines (over the ~800 guideline) | **Exception approved by the director** because it is docs only (Confirmed by the director in a PR comment on PR #5; the director's merge of this PR is the final record) |
 
 ### Still open
 

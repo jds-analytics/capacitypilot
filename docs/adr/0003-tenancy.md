@@ -44,7 +44,10 @@ Plain-English terms:
    `rooms (tenant_id, site_id) REFERENCES sites (tenant_id, id)`, so a room can never point at another
    tenant's site.
 3. **First lock (application)**: all queries go through a repository layer that requires a
-   `TenantContext`; there is no query function without one. Requests without a tenant are denied (403).
+   `TenantContext`; there is no query function without one. Requests without a tenant are denied with
+   **401** (not logged in), matching the spec: a tenant only comes from a valid login, so a request
+   with no tenant is treated as not logged in. 403 is kept for "logged in, but your role may not do
+   this".
 4. **Second lock (database)**: RLS is `ENABLE`d and `FORCE`d on every tenant-owned table with
    policy `USING (tenant_id = current_setting('app.tenant_id')::uuid)` and the same `WITH CHECK`.
    Each transaction runs `SET LOCAL app.tenant_id = '<id>'`. If the setting is missing, the cast
@@ -61,8 +64,8 @@ Plain-English terms:
 8. **pgvector search** runs under the same RLS; we enable pgvector iterative index scans so filtering
    by tenant does not starve results (see risk R6 in the spec).
 9. **Tests** (named in the spec): `test_every_tenant_table_has_tenant_id_and_forced_rls`,
-   `test_rls_blocks_query_without_tenant_filter`, `test_cross_tenant_read_returns_404` (one per
-   endpoint), `test_child_cannot_reference_other_tenant_parent`, `test_app_role_cannot_bypass_rls`.
+   `test_rls_blocks_query_without_tenant_setting`, `test_cross_tenant_access_returns_404_for_every_endpoint`
+   (one per endpoint), `test_child_cannot_reference_other_tenant_parent`, `test_app_role_cannot_bypass_rls`.
 
 ## Consequences
 

@@ -39,7 +39,9 @@ Plain-English terms:
 1. **Tool**: Alembic in `core/migrations/`, run only as the `cp_owner` role via `make migrate`
    (part of `make up`). App roles cannot change schema.
 2. **Three phases, separate releases**:
-   - Expand: add tables, nullable columns, new indexes (`CREATE INDEX CONCURRENTLY`), new RLS policies.
+   - Expand: add tables, nullable columns, new indexes (`CREATE INDEX CONCURRENTLY`,
+     which cannot run inside a transaction, so use Alembic's autocommit block:
+     `with op.get_context().autocommit_block():`), new RLS policies.
      Never drop or rename in an expand migration.
    - Migrate: code writes both old and new shapes; a batched backfill job copies data.
    - Contract: only after no running code reads the old shape, drop it in a later migration.
