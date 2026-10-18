@@ -136,7 +136,7 @@ security, indexes leading on `tenant_id`, and composite foreign keys `(tenant_id
 Users are **not** stored yet: `actor_id` is the user id string supplied by the auth layer (ADR 0008).
 A `users`/`memberships` table is added when the director chooses the auth provider (CP-44).
 
-### Roles and permissions (PLACEHOLDER until auth is chosen, open question Q1 and Q5)
+### Roles and permissions (PLACEHOLDER until a real auth provider is chosen; Q1 answered "local for now", Q5 open)
 
 | Action | viewer | requester | approver | admin | ingestor |
 |---|---|---|---|---|---|
@@ -428,8 +428,8 @@ Each has a mitigation below.
 
 **Decision:** The work is split into **52 tickets** in **9 waves**. Tickets in the same wave can be built
 at the same time because **no two of them touch the same file** (the file list for each ticket proves
-it). A ticket only depends on tickets from earlier waves. Two tickets are blocked on your decisions
-(CP-44 auth, CP-49 staging).
+it). A ticket only depends on tickets from earlier waves. Two tickets are deferred until you decide
+(CP-44 real auth provider, deferred because you chose local login for now; CP-49 staging, open question Q7).
 
 Rules for every ticket:
 - Size: estimated changed lines exclude lock files and generated files (ADR 0005). If a ticket grows
@@ -920,7 +920,7 @@ CP-46 = `apps/web/app/documents/**`, `apps/web/e2e/documents.spec.ts`. No shared
   4. `test_trace_continues_into_llm_call` passes; spans record tokens and cost in dollars; prompts with user data are not logged.
   5. PR includes a full `make eval` table meeting every gated target in spec section 6, or states the gap and stops for director review.
 
-#### CP-44: Real authentication provider (BLOCKED on Q1)
+#### CP-44: Real authentication provider (DEFERRED: Q1 answered "local for now"; needed before any non-local environment)
 - Owner: security | Risk: risk:high (auth, dependencies) | Size: ~600 lines | Depends on: CP-12; director answer to Q1
 - Files: as in overlap check
 - Acceptance:
@@ -1048,9 +1048,10 @@ CP-52 = no repository files (opens issues only). No shared files.
 
 Please answer each with a choice or "use the proposal". Items marked **blocks** stop the named tickets.
 
-1. **Q1. Login provider (blocks CP-44, CP-49).** Which identity provider should we use (for example
-   Auth0, Okta, Microsoft Entra ID, Keycloak self-hosted, Clerk)? Until then we use the local-only fake
-   login (ADR 0008).
+1. **Q1. Login provider. ANSWERED by the director: "local for now".** We use the local-only fake login
+   (ADR 0008) for all development and testing. The real provider (for example Auth0, Okta, Microsoft
+   Entra ID, Keycloak self-hosted, Clerk) is deferred. CP-44 and CP-49 (staging) stay on the list but
+   cannot start until a provider is chosen, because the fake login refuses to run outside local/test.
 2. **Q2. Which Claude model?** A fast, low-cost Claude model is the safest way to meet **$0.02 per
    question** and **1.5 s** to first token. A larger model may answer better but could break the cost
    and speed targets. Proposal: start with the fast model, compare a larger one in `make eval`.
