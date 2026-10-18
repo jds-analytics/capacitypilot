@@ -65,6 +65,8 @@ Plain-English terms:
 7. **Exactly-once effect**: delivery is "at least once"; storage is made idempotent. Telemetry rows have
    a unique key `(tenant_id, rack_id, metric, ts)` and are written with `ON CONFLICT DO NOTHING`.
    Event consumers record processed event ids in a `processed_events` table and skip repeats.
+   Request retry keys: an in-progress key expires after the endpoint's hard timeout plus **60 s**. Endpoints
+   with no stated timeout use a default hard timeout of **10 s** (director decision), so **70 s** (spec section 3).
 8. **Transactional outbox**: domain changes and their events are written in one Postgres transaction
    to `outbox_events`. A relay process reads unpublished rows with `FOR UPDATE SKIP LOCKED`
    (batches of **100**), appends them to `cp:events`, then marks them published.

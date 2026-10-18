@@ -180,6 +180,8 @@ twice. Errors use one standard format. Endpoints marked **P2** arrive in Phase 2
   **Crash safety**: if the server crashes mid-request, its key would otherwise stay "in progress"
   forever. So an in-progress key older than the endpoint's hard timeout plus a **60 s** margin is
   treated as failed and the request may be retried (for the assistant: 15 s + 60 s = **75 s**).
+  Every endpoint without its own stated hard timeout has a default hard timeout of **10 s** (director
+  decision), so its in-progress key expires after 10 s + 60 s = **70 s**.
   **Streaming assistant (`POST /v1/planner/questions`)**: a repeat while the first answer is still
   streaming (and younger than 75 s) -> **409** + `Retry-After: 2`; a repeat after it finished returns
   the stored answer as a plain JSON body (the same shape as `GET /v1/planner/questions/{id}`, status
