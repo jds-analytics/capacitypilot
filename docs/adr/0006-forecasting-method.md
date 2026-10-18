@@ -1,6 +1,6 @@
 # ADR 0006: Forecasting method
 
-- Status: Proposed (method family decided by the director; specifics need approval)
+- Status: Accepted (method family decided by the director; accuracy targets approved 2026-10-17, Q4)
 - Date: 2026-10-17
 - Related: docs/spec.md "Forecast targets", docs/metrics.md
 
@@ -54,7 +54,7 @@ Plain-English terms:
    layered on top as "committed demand" in the capacity view, so they are not double-counted.
 6. **Backtest**: rolling origins every **14 days** across the most recent **180 days** (at least
    **6 origins**), each forecasting **90 days**; report WAPE and MAPE by horizon bucket (1-30, 31-90
-   days) and interval coverage, versus the seasonal naive baseline. Proposed targets are in the spec.
+   days) and interval coverage, versus the seasonal naive baseline. Approved targets are in spec section 6.
 7. **Fallback**: if the model fails to fit or its own backtest WAPE is worse than the baseline for a
    site, publish the seasonal naive forecast for that site and flag `model = seasonal_naive`.
 8. **Versioning**: each run stores `model_version` and parameters so results are reproducible.
@@ -65,4 +65,5 @@ Plain-English terms:
   finish in under **10 minutes** on a laptop.
 - Cost: sudden step changes (a large tenant moving in) are learned only after they appear; this is why
   committed reservations are shown separately.
-- Accuracy targets are **proposed** until the director approves them (open question).
+- Accuracy targets were approved by the director on 2026-10-17 (spec section 6). They were set on
+  synthetic data and should be revisited once real data exists.
