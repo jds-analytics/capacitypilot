@@ -500,7 +500,7 @@ a mitigation below.
 | R13 | 32 MVP PRs plus 22 Phase 2 PRs need director approval | High | Medium | Small PRs (under 800 lines), plain-English summaries, waves let several merge per sitting |
 | R14 | Forecast and capacity math defined inconsistently across API, web and assistant | Medium | Medium | Single definitions in docs/metrics.md and one capacity service used by all |
 | R15 | MVP has no general rate limits or security headers (CP-26 is Phase 2) | Low (local only) | Medium | MVP runs only on the local stack with synthetic data; planner and ingest have their own limits; CP-26 is first in Phase 2 and required before any non-local deployment |
-| R16 | MVP is API-only; the director has no screens | High | Low | Demo through `make dev-token` + scripted requests, eval and backtest reports; see open question Q12 to pull the planner chat screen into the MVP |
+| R16 | MVP is API-only; the director has no screens | High | Low | Demo through `make dev-token` + scripted requests, eval and backtest reports; director decided (Q12) to keep the MVP API-only and build the planner chat screen first in Phase 2 |
 
 ---
 
@@ -511,8 +511,8 @@ a mitigation below.
 the same time because **no two of them touch the same file** (each wave's file list proves it). A
 ticket only depends on tickets in earlier waves, and every MVP ticket depends only on other MVP
 tickets. Ticket IDs are unchanged from the first draft; two Phase 2 tickets are new (CP-53, CP-54,
-split out so the MVP does not need the web app). CP-44 (real login) waits for a provider choice and
-CP-49 (staging) is deferred.
+split out so the MVP does not need the web app). CP-44 (real login) waits for the provider choice at the start of Phase 2 (Q13) and
+CP-49 (staging, on the director's home K3s cluster, Q14) comes after it. The director accepted the 32-ticket MVP as laid out.
 
 Rules for every ticket:
 - Size: estimated changed lines exclude lock files and generated files (ADR 0005). If a ticket grows
@@ -660,6 +660,17 @@ test in section 7 marked with an MVP ticket passes.
 **Decision:** Phase 2 adds the web screens, editing of sites/rooms/racks, the general security
 plugins, load and failure tests, CI hardening, data retention, the nightly eval in CI, the real login
 provider (when chosen) and staging (deferred). It starts after the MVP is accepted.
+
+**Phase 2 order (director decision, Q12 and Q13):**
+
+1. **Decision point:** at the start of Phase 2 the director chooses the real login provider (unblocks CP-44).
+2. **CP-26 first** (rate limits and security headers; must land before anything leaves the laptop).
+3. **Planner chat screen next:** CP-50 is the first screen built, immediately after CP-26. Its prerequisites
+   are pulled forward in this order: CP-11, CP-21, CP-22 (wave P1), CP-35 and CP-53 (wave P2), then CP-50.
+   Other Phase 2 tickets fill the same waves in parallel but do not delay this chain.
+4. Staging (CP-49) deploys to the director's home K3s cluster (Raspberry Pi, arm64) once CP-44 is done.
+
+The wave grouping below is unchanged, so the no-shared-files check still holds.
 
 | Phase 2 wave | Tickets | What it delivers |
 |---|---|---|
@@ -1163,7 +1174,7 @@ Each ticket shows whether it is **MVP (wave Mn)** or **Phase 2 (wave Pn)**.
   3. `timeout-minutes: 60`; actions pinned to SHAs; spend per run under **$10** including the Opus comparison (from the report).
 
 #### CP-49: Staging deployment (DEFERRED until after MVP, Q7)
-- Phase 2 (P3, deferred) | Owner: release | Risk: risk:high (infra, CI/CD) | Size: ~500 lines | Depends on: CP-26, CP-41, CP-44; a staging host chosen by the director
+- Phase 2 (P3, deferred) | Owner: release | Risk: risk:high (infra, CI/CD) | Size: ~500 lines | Depends on: CP-26, CP-41, CP-44; staging host is the director's home K3s cluster (Raspberry Pi, arm64; Q14)
 - Files: as in overlap check
 - Acceptance:
   1. Deploys images to the chosen staging host only after director approval via the GitHub `staging` environment.
@@ -1265,20 +1276,18 @@ Totals: MVP **32** tickets in **8** waves; Phase 2 **22** tickets in **4** waves
 | Q4 | Forecast accuracy targets | **Approved** as in section 6 |
 | Q5 | Reservation approvals | `approver` and `admin` roles approve for their whole tenant; **nobody approves their own request**; approved but unallocated reservations **expire after 14 days**; no site-level approvers in this version |
 | Q6 | Telemetry retention | Raw **14 days**, hourly **400 days**, daily **5 years** |
-| Q7 | Staging host | **Deferred until after the MVP** (CP-49 in Phase 2). Reason: the director's rule was "use the proposal if it is local (Colima) or free, otherwise defer". My draft did not make a single proposal; it listed examples (a cloud account, a managed container service, the home K3s cluster). None of them is the local Colima stack, and the cloud options are not free, so the "local or free" condition is not met and staging is deferred. The availability SLO is deferred with it |
+| Q7 | Staging host | **Deferred until after the MVP** (CP-49 in Phase 2); host later chosen in Q14: the home K3s cluster. Reason: the director's rule was "use the proposal if it is local (Colima) or free, otherwise defer". My draft did not make a single proposal; it listed examples (a cloud account, a managed container service, the home K3s cluster). None of them is the local Colima stack, and the cloud options are not free, so the "local or free" condition is not met and staging is deferred. The availability SLO is deferred with it |
 | Q8 | Synthetic policy documents | The 6 proposed documents (section 1) |
 | Q9 | AI spending limits | **$10/day** per tenant for the live assistant; **$10** per full eval run, now including the Opus comparison (section 6) |
 | Q10 | Human labels for the AI judge | The **director** labels the 30 calibration answers (about 1 hour), using a form QA provides |
 | Q11 | Other proposed targets | **All approved**: forecast freshness by 02:30 UTC, document searchable within 120 s, 20% low-headroom highlight, false refusal <= 0.05, citation presence >= 0.95, judge reliability >= 0.85, rate limits (50 requests/second per tenant, 20 per IP), 14-day reservation expiry, 14-day raw retention, spend caps, 15 s agent timeout |
+| Q12 | Screen in the MVP? | **No.** The MVP stays API-only (32 tickets, section 9.1 accepted as laid out). The planner chat screen (CP-50) is the first screen built in Phase 2, right after CP-26 (rate limits and security headers); see "Phase 2 order" in section 9.2 |
+| Q13 | Real login provider (CP-44) | **Decision point: the start of Phase 2.** The director chooses the provider before any Phase 2 work that leaves the laptop; CP-44 and CP-49 cannot start until then |
+| Q14 | Phase 2 staging host (CP-49) | **The director's home K3s cluster (Raspberry Pi, arm64).** Images already build for arm64 and amd64. The staging availability SLO is set when CP-49 is built |
+| ADRs | ADR 0001 to 0008 | **All Accepted on 2026-10-17, approved by the director** |
+| PR size | This pull request is about 2,300 lines (over the ~800 guideline) | **Exception accepted by the director** because it is docs only |
 
 ### Still open
 
-1. **Q12. Should the MVP include a screen?** The MVP has no web screens; you would see it through
-   a guided demo and reports. Adding the planner chat screen to the MVP costs **6 more tickets**
-   (CP-11 web shell, CP-21 and CP-22 because the web client CP-35 needs them, CP-35, CP-50, and CP-53 to
-   containerise it), taking the MVP from 32 to 38. Proposal: keep the MVP API-only and build the
-   screens first in Phase 2.
-2. **Q13. When to choose the real login provider (CP-44)?** Not needed for the MVP, but needed before
-   any non-local deployment, including staging. Proposal: decide at the start of Phase 2.
-3. **Q14. Staging host for Phase 2 (CP-49).** When we get there: a free option you already own (the
-   home K3s cluster) or a paid cloud account? This also sets the availability SLO.
+Nothing blocks the MVP. Open items for later: the login provider choice (Q13, at the start of Phase 2)
+and the staging availability SLO number (set with CP-49).

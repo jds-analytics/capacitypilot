@@ -1,6 +1,6 @@
 # ADR 0004: Database migration strategy
 
-- Status: Proposed (needs director approval)
+- Status: Accepted on 2026-10-17, approved by the director
 - Date: 2026-10-17
 - Related: docs/spec.md "Engineering standards", ADR 0003
 

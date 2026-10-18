@@ -1,6 +1,6 @@
 # ADR 0005: Repository layout and file ownership (so tickets can run in parallel)
 
-- Status: Proposed (needs director approval)
+- Status: Accepted on 2026-10-17, approved by the director
 - Date: 2026-10-17
 - Related: docs/spec.md "Tickets by wave"
 

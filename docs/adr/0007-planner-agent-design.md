@@ -1,6 +1,6 @@
 # ADR 0007: Planner Q&A agent design (router + two models)
 
-- Status: Accepted by the director on 2026-10-17 (models chosen: Q2; embeddings: Voyage AI, Q3)
+- Status: Accepted on 2026-10-17, approved by the director (models: Q2; embeddings: Voyage AI, Q3)
 - Date: 2026-10-17
 - Related: docs/spec.md "AI eval targets", docs/threat-model.md
 

@@ -1,6 +1,6 @@
 # ADR 0006: Forecasting method
 
-- Status: Accepted (method family decided by the director; accuracy targets approved 2026-10-17, Q4)
+- Status: Accepted on 2026-10-17, approved by the director (accuracy targets approved, Q4)
 - Date: 2026-10-17
 - Related: docs/spec.md "Forecast targets", docs/metrics.md
 

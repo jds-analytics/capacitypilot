@@ -1,6 +1,6 @@
 # ADR 0001: Queue choice for telemetry and background work
 
-- Status: Proposed (needs director approval)
+- Status: Accepted on 2026-10-17, approved by the director
 - Date: 2026-10-17
 - Related: docs/spec.md sections "Ingest targets" and "Engineering standards"
 

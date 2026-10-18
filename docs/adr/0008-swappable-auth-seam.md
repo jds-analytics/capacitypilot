@@ -1,6 +1,6 @@
 # ADR 0008: Swappable authentication layer (until the director chooses an identity provider)
 
-- Status: Accepted. Director decision 2026-10-17 (Q1): **local login for now**. The dev provider below
+- Status: Accepted on 2026-10-17, approved by the director. Decision (Q1): **local login for now**. The dev provider below
   is the login for the MVP. Choosing a real provider (ticket CP-44) is deferred to Phase 2 and must
   happen before any non-local deployment.
 - Date: 2026-10-17

@@ -1,6 +1,6 @@
 # ADR 0002: Pagination for every list endpoint
 
-- Status: Proposed (needs director approval)
+- Status: Accepted on 2026-10-17, approved by the director
 - Date: 2026-10-17
 - Related: docs/spec.md sections "API outline" and "Engineering standards"
 

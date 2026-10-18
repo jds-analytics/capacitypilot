@@ -1,6 +1,6 @@
 # ADR 0003: Tenancy (keeping each customer's data separate)
 
-- Status: Proposed (needs director approval)
+- Status: Accepted on 2026-10-17, approved by the director
 - Date: 2026-10-17
 - Related: docs/spec.md "Domain model", docs/threat-model.md, ADR 0008 (auth seam)
 
