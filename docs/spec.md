@@ -1,0 +1,1 @@
+# Spec — written by the architect in Prompt 0.  
