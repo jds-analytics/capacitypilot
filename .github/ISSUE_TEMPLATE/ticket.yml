@@ -1,0 +1,35 @@
+name: Ticket
+description: Planned work from docs/spec.md
+title: "[Ticket]: "
+labels: ["ticket"]
+body:
+  - type: dropdown
+    id: owner
+    attributes:
+      label: Owner agent
+      options: [builder, data-engineer, analytics, security, qa, release]
+    validations:
+      required: true
+  - type: dropdown
+    id: risk
+    attributes:
+      label: Risk tier
+      options: ["risk:low", "risk:medium", "risk:high"]
+    validations:
+      required: true
+  - type: textarea
+    id: what
+    attributes:
+      label: What to build
+    validations:
+      required: true
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance criteria (numbered, testable)
+    validations:
+      required: true
+  - type: input
+    id: spec
+    attributes:
+      label: Spec section
